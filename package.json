@@ -2,12 +2,16 @@
   "name": "handconnect",
   "version": "1.0.0",
   "private": true,
+  "homepage": "https://riteshkumar4204x-netizen.github.io/hand-connect",
   "scripts": {
     "start": "serve .",
     "dev": "serve .",
-    "build": "echo \"No build step required\""
+    "build": "echo \"No build step required\"",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d ."
   },
   "devDependencies": {
+    "gh-pages": "^5.0.0",
     "serve": "^14.2.0"
   }
 }
