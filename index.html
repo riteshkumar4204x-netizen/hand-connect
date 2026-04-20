@@ -3,13 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Permissions-Policy" content="camera=(self), microphone=(self)">
     <title>Advanced Hand Tracking AR</title>
     
-    <!-- MediaPipe Hands CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <!-- MediaPipe Hands CDN (pinned versions) -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils@0.6.1675466862/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
 
     <style>
         :root {
@@ -671,8 +672,18 @@ function renderLoop(timestamp) {
  * MEDIAPIPE INITIALIZATION
  */
 function initMediaPipe() {
+    // Verify MediaPipe globals are available
+    if (typeof Hands === 'undefined') {
+        showError('MediaPipe Hands library failed to load. Please check your internet connection and refresh.');
+        return;
+    }
+    if (typeof Camera === 'undefined') {
+        showError('MediaPipe Camera library failed to load. Please check your internet connection and refresh.');
+        return;
+    }
+
     const hands = new Hands({locateFile: (file) => {
-        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`;
     }});
 
     hands.setOptions({
@@ -706,16 +717,34 @@ function initMediaPipe() {
         updateHum(currentHands);
     });
 
-    const camera = new Camera(videoElement, {
-        onFrame: async () => {
-            await hands.send({image: videoElement});
-        },
-        width: 1280,
-        height: 720,
-        facingMode: 'user'
-    });
-    
-    camera.start();
+    try {
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720,
+            facingMode: 'user'
+        });
+        
+        camera.start().catch((err) => {
+            console.error('Camera start failed:', err);
+            showError('Camera access denied or unavailable. Please allow camera access and refresh the page.');
+        });
+    } catch(err) {
+        console.error('Camera init failed:', err);
+        showError('Failed to initialize camera. Please make sure your browser supports camera access over HTTPS.');
+    }
+}
+
+function showError(msg) {
+    const overlay = document.getElementById('startOverlay');
+    overlay.classList.remove('hidden');
+    overlay.innerHTML = `
+        <h1 style="margin-bottom: 20px; font-weight: 300; letter-spacing: 4px; color: #ff4444;">ERROR</h1>
+        <p style="margin-bottom: 20px; color: #ccc; max-width: 500px; text-align: center;">${msg}</p>
+        <button class="start-btn" onclick="location.reload()">Retry</button>
+    `;
 }
 
 </script>
