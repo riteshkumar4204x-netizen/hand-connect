@@ -232,6 +232,8 @@ let renderStarted = false;
 let experienceStarted = false;
 let cameraStream = null;
 let frameLoopRunning = false;
+let lastVideoTime = 0;
+let stalledFrameCount = 0;
 
 let currentHands = []; // Latest data from MediaPipe
 let handVelocities = 0; // Average hand movement speed
@@ -314,8 +316,7 @@ async function requestCameraPermission() {
     for (const constraints of attempts) {
         try {
             const stream = await navigator.mediaDevices.getUserMedia(constraints);
-            stream.getTracks().forEach(track => track.stop());
-            return;
+            return stream;
         } catch (err) {
             lastError = err;
         }
@@ -352,14 +353,14 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     try {
         startBtn.disabled = true;
         if (statusText) statusText.innerText = 'Requesting camera permission...';
-        await requestCameraPermission();
+        const preGrantedStream = await requestCameraPermission();
 
         experienceStarted = true;
         document.getElementById('startOverlay').classList.add('hidden');
         document.getElementById('hud').classList.remove('hidden');
         document.getElementById('themes').classList.remove('hidden');
         initAudio();
-        await initMediaPipe();
+        await initMediaPipe(preGrantedStream);
 
         if (!renderStarted) {
             renderStarted = true;
@@ -868,6 +869,21 @@ async function startCameraFrameLoop(hands) {
         if (!frameLoopRunning) return;
         try {
             if (videoElement.readyState >= 2) {
+                // Recover when mobile camera stalls (black preview with granted permission).
+                if (videoElement.currentTime === lastVideoTime) {
+                    stalledFrameCount += 1;
+                    if (stalledFrameCount > 45) {
+                        try {
+                            await videoElement.play();
+                        } catch (playErr) {
+                            console.warn('Video recover play failed:', playErr);
+                        }
+                        stalledFrameCount = 0;
+                    }
+                } else {
+                    lastVideoTime = videoElement.currentTime;
+                    stalledFrameCount = 0;
+                }
                 await hands.send({ image: videoElement });
             }
         } catch (e) {
@@ -883,23 +899,38 @@ async function startMobileCamera(hands) {
     const attempts = getMobileCameraConstraints();
     let lastError = null;
 
-    for (const constraints of attempts) {
+    for (let i = 0; i < attempts.length; i++) {
+        const constraints = attempts[i];
         try {
-            if (cameraStream) {
+            if (cameraStream && i > 0) {
                 cameraStream.getTracks().forEach(track => track.stop());
             }
 
-            cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+            if (!cameraStream) {
+                cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+            }
             videoElement.srcObject = cameraStream;
             videoElement.setAttribute('playsinline', '');
             videoElement.setAttribute('muted', '');
             videoElement.muted = true;
 
+            await new Promise((resolve) => {
+                if (videoElement.readyState >= 1) {
+                    resolve();
+                    return;
+                }
+                const onLoaded = () => {
+                    videoElement.removeEventListener('loadedmetadata', onLoaded);
+                    resolve();
+                };
+                videoElement.addEventListener('loadedmetadata', onLoaded);
+            });
             await videoElement.play();
             await startCameraFrameLoop(hands);
             return;
         } catch (err) {
             lastError = err;
+            cameraStream = null;
             if (statusText) statusText.innerText = 'Retrying camera with fallback settings...';
         }
     }
@@ -921,7 +952,7 @@ document.addEventListener('visibilitychange', async () => {
 /**
  * MEDIAPIPE INITIALIZATION
  */
-async function initMediaPipe() {
+async function initMediaPipe(preGrantedStream = null) {
     const statusText = document.getElementById('statusText');
     
     // Verify MediaPipe globals are available
@@ -981,6 +1012,9 @@ async function initMediaPipe() {
 
     if (statusText) statusText.innerText = 'Starting camera...';
     try {
+        if (preGrantedStream) {
+            cameraStream = preGrantedStream;
+        }
         await startMobileCamera(hands);
         console.log('Camera started successfully');
     } catch(err) {
