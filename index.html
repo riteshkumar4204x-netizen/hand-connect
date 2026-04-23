@@ -3,7 +3,6 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Permissions-Policy" content="camera=(self), microphone=(self)">
     <title>Advanced Hand Tracking AR</title>
     
     <!-- MediaPipe Hands CDN -->
@@ -229,6 +228,10 @@ let time = 0;
 let lastTime = performance.now();
 let framesThisSecond = 0;
 let lastFpsTime = performance.now();
+let renderStarted = false;
+let experienceStarted = false;
+let cameraStream = null;
+let frameLoopRunning = false;
 
 let currentHands = []; // Latest data from MediaPipe
 let handVelocities = 0; // Average hand movement speed
@@ -293,14 +296,81 @@ document.querySelectorAll('.theme-btn').forEach(btn => {
     });
 });
 
-// Start button triggers AudioContext and hides overlay
-document.getElementById('startBtn').addEventListener('click', () => {
-    document.getElementById('startOverlay').classList.add('hidden');
-    document.getElementById('hud').classList.remove('hidden');
-    document.getElementById('themes').classList.remove('hidden');
-    initAudio();
-    initMediaPipe();
-    requestAnimationFrame(renderLoop);
+// Explicitly request camera access from a user gesture for better mobile reliability.
+async function requestCameraPermission() {
+    if (!window.isSecureContext) {
+        throw new Error('insecure-context');
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('unsupported-browser');
+    }
+
+    const attempts = [
+        { video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+        { video: true, audio: false }
+    ];
+
+    let lastError = null;
+    for (const constraints of attempts) {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            stream.getTracks().forEach(track => track.stop());
+            return;
+        } catch (err) {
+            lastError = err;
+        }
+    }
+    throw lastError || new Error('camera-unavailable');
+}
+
+function getCameraErrorMessage(err) {
+    if (!err) return 'Unable to access camera. Please refresh and try again.';
+    if (err.message === 'insecure-context') {
+        return 'Camera needs HTTPS on phone browsers. Open the secure (https://) Vercel URL, not a local IP or http link.';
+    }
+    if (err.message === 'unsupported-browser') {
+        return 'This browser does not support camera APIs. Please use Chrome, Edge, or Safari.';
+    }
+    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        return 'Camera permission was blocked. Tap the lock icon in browser address bar and set Camera to Allow, then reload.';
+    }
+    if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        return 'No camera found on this device.';
+    }
+    if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        return 'Camera is being used by another app. Close other camera apps and retry.';
+    }
+    return 'Camera access failed. Please allow camera permission and refresh.';
+}
+
+// Start button triggers permission flow, then starts audio + hand tracking.
+document.getElementById('startBtn').addEventListener('click', async () => {
+    if (experienceStarted) return;
+    const startBtn = document.getElementById('startBtn');
+    const statusText = document.getElementById('statusText');
+
+    try {
+        startBtn.disabled = true;
+        if (statusText) statusText.innerText = 'Requesting camera permission...';
+        await requestCameraPermission();
+
+        experienceStarted = true;
+        document.getElementById('startOverlay').classList.add('hidden');
+        document.getElementById('hud').classList.remove('hidden');
+        document.getElementById('themes').classList.remove('hidden');
+        initAudio();
+        await initMediaPipe();
+
+        if (!renderStarted) {
+            renderStarted = true;
+            requestAnimationFrame(renderLoop);
+        }
+    } catch (err) {
+        console.error('Startup failed:', err);
+        showError(getCameraErrorMessage(err));
+    } finally {
+        startBtn.disabled = false;
+    }
 });
 
 
@@ -782,6 +852,72 @@ function renderLoop(timestamp) {
     ctx.globalCompositeOperation = 'source-over'; // Restore
 }
 
+function getMobileCameraConstraints() {
+    return [
+        { video: { facingMode: { ideal: 'user' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+        { video: { facingMode: 'user' }, audio: false },
+        { video: true, audio: false }
+    ];
+}
+
+async function startCameraFrameLoop(hands) {
+    if (frameLoopRunning) return;
+    frameLoopRunning = true;
+
+    const runFrame = async () => {
+        if (!frameLoopRunning) return;
+        try {
+            if (videoElement.readyState >= 2) {
+                await hands.send({ image: videoElement });
+            }
+        } catch (e) {
+            console.error('Hand detection frame error:', e);
+        }
+        requestAnimationFrame(runFrame);
+    };
+    requestAnimationFrame(runFrame);
+}
+
+async function startMobileCamera(hands) {
+    const statusText = document.getElementById('statusText');
+    const attempts = getMobileCameraConstraints();
+    let lastError = null;
+
+    for (const constraints of attempts) {
+        try {
+            if (cameraStream) {
+                cameraStream.getTracks().forEach(track => track.stop());
+            }
+
+            cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+            videoElement.srcObject = cameraStream;
+            videoElement.setAttribute('playsinline', '');
+            videoElement.setAttribute('muted', '');
+            videoElement.muted = true;
+
+            await videoElement.play();
+            await startCameraFrameLoop(hands);
+            return;
+        } catch (err) {
+            lastError = err;
+            if (statusText) statusText.innerText = 'Retrying camera with fallback settings...';
+        }
+    }
+
+    throw lastError || new Error('camera-unavailable');
+}
+
+document.addEventListener('visibilitychange', async () => {
+    if (!cameraStream) return;
+    if (document.visibilityState === 'visible' && videoElement.paused) {
+        try {
+            await videoElement.play();
+        } catch (e) {
+            console.warn('Video resume failed:', e);
+        }
+    }
+});
+
 /**
  * MEDIAPIPE INITIALIZATION
  */
@@ -793,11 +929,6 @@ async function initMediaPipe() {
         showError('MediaPipe Hands library failed to load. Please check your internet connection and refresh.');
         return;
     }
-    if (typeof Camera === 'undefined') {
-        showError('MediaPipe Camera library failed to load. Please check your internet connection and refresh.');
-        return;
-    }
-
     // Show loading status
     if (statusText) statusText.innerText = 'Loading hand tracking model...';
 
@@ -848,25 +979,13 @@ async function initMediaPipe() {
         return;
     }
 
+    if (statusText) statusText.innerText = 'Starting camera...';
     try {
-        const camera = new Camera(videoElement, {
-            onFrame: async () => {
-                try {
-                    await hands.send({image: videoElement});
-                } catch(e) {
-                    console.error('Hand detection frame error:', e);
-                }
-            },
-            width: 1280,
-            height: 720,
-            facingMode: 'user'
-        });
-        
-        await camera.start();
+        await startMobileCamera(hands);
         console.log('Camera started successfully');
     } catch(err) {
         console.error('Camera failed:', err);
-        showError('Camera access denied or unavailable. Please allow camera access in your browser settings and refresh.');
+        showError(getCameraErrorMessage(err));
     }
 }
 
