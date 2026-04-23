@@ -491,6 +491,25 @@ function drawNeonHeart(x, y, size, alpha = 1) {
     ctx.restore();
 }
 
+function drawLoveText(text) {
+    const y = Math.max(70, height * 0.12);
+    ctx.save();
+    ctx.globalAlpha = 1;
+    // Canvas is mirrored for selfie mode; flip text back so it reads normally.
+    ctx.translate(width, 0);
+    ctx.scale(-1, 1);
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 64px "Segoe UI", sans-serif';
+    ctx.shadowBlur = 30;
+    ctx.shadowColor = '#ff4fc2';
+    ctx.strokeStyle = '#ff6ad6';
+    ctx.lineWidth = 3;
+    ctx.strokeText(text, width / 2, y);
+    ctx.fillStyle = '#ff9ae9';
+    ctx.fillText(text, width / 2, y);
+    ctx.restore();
+}
+
 function isHeartPose(handA, handB) {
     const thumbsClose = getDist(handA[4], handB[4]) < 0.16;
     const indexesClose = getDist(handA[8], handB[8]) < 0.16;
@@ -620,6 +639,7 @@ function renderLoop(timestamp) {
         bgCtx.clearRect(0, 0, width, height);
         ctx.clearRect(0, 0, width, height);
         ctx.globalCompositeOperation = 'source-over';
+        drawLoveText('ANCHAL');
         drawNeonHeart(heartCenter.x, heartCenter.y, baseSize * pulse, 1);
         uiGesture.innerText = 'LOVE MODE';
         return;
